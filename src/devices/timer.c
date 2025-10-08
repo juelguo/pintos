@@ -84,8 +84,6 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
-int timeout_ticks;
-
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
@@ -171,6 +169,7 @@ timer_print_stats (void)
   printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
 }
 
+/* Unblocks thread if it is done sleeping */
 static void awake_thread(struct thread *t, void *aux) {
   // is thread blocked, is initialized and has enough time passed?
   if (t->status == THREAD_BLOCKED && t-> sleep_start != 0 && timer_elapsed(t->sleep_start) >= t->sleep_ticks) {
