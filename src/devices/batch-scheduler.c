@@ -31,6 +31,7 @@
  * Random numbers are used to simulate a task's transfer duration
  */
 #include "lib/random.h"
+// #include <synch.h>
 
 #define MAX_NUM_OF_TASKS 200
 
@@ -76,12 +77,25 @@ static void transfer_data (const task_t *task);
 /* Releases the slot */
 static void release_slot (const task_t *task);
 
+direction_t current_direction;
+uint8_t current_tasks = 0;
+uint16_t priority_tasks_waiting[2] = {0, 0};
+uint16_t normal_tasks_waiting[2] = {0, 0};
+
+struct lock buss_lock;
+struct condition waiting_to_go[2];
+
 void init_bus (void) {
 
   random_init ((unsigned int)123456789);
 
   /* TODO: Initialize global/static variables,
      e.g. your condition variables, locks, counters etc */
+
+  lock_init(&buss_lock);
+  cond_init(&waiting_to_go[SEND]);
+  cond_init(&waiting_to_go[RECEIVE]);
+  current_direction = SEND;
 }
 
 void batch_scheduler (unsigned int num_priority_send,
@@ -188,6 +202,29 @@ void get_slot (const task_t *task) {
    * feel free to schedule priority tasks of the same direction,
    * even if there are priority tasks of the other direction waiting
    */
+  lock_acquire(&buss_lock);
+  while(
+    (current_direction != task->direction && current_tasks > 0) || // TASK DIRECTION IS NOT CURRENT DIRECTION AND BUS IS USED
+    current_tasks >= BUS_CAPACITY || // THE BUSS IS USED TO ITS CAPACITY
+    (task->priority != PRIORITY && (// THIS TASK IS NOT PRIORITISED
+      priority_tasks_waiting[task->direction] > 0 || // AND CURRENT DIRECTION HAS HIGHER PRIORITY TASKS
+      priority_tasks_waiting[other_direction(task->direction)] > 0)) // AND THE OTHER DIRECTION HAS A HIGHER PRIORITY TASK
+  ) {
+    if (task->priority == PRIORITY) {
+      priority_tasks_waiting[task->direction] += 1;
+    } else {
+      normal_tasks_waiting[task->direction] += 1;
+    }
+    cond_wait(&waiting_to_go[task->direction], &buss_lock);
+    if (task->priority == PRIORITY) {
+      priority_tasks_waiting[task->direction] -= 1;
+    } else {
+      normal_tasks_waiting[task->direction] -= 1;
+    }
+  }
+  current_tasks += 1;
+  current_direction = task->direction;
+  lock_release(&buss_lock);
 }
 
 void transfer_data (const task_t *task) {
@@ -201,4 +238,19 @@ void release_slot (const task_t *task) {
    *       - Do you need to notify any waiting task?
    *       - Do you need to increment/decrement any counter?
    */
+  
+  lock_acquire(&buss_lock);
+  current_tasks -= 1;
+
+  if (priority_tasks_waiting[task->direction]) { // GIVE PRIORITY TO OTHER PRIORITY TASKS IN SAME DIRECTION 
+    cond_signal(&waiting_to_go[task->direction], &buss_lock);
+  } else if (current_tasks == 0 && priority_tasks_waiting[other_direction(task->direction)] > 0) { // GIVE PRIORITY TO OTHER PRIORITY TASKS IN OTHER DIRECTION
+    cond_broadcast(&waiting_to_go[other_direction(task->direction)], &buss_lock);
+  } else if (normal_tasks_waiting[task->direction] > 0) { // WAKE TASKS IN SAME DIRECTION
+    cond_signal(&waiting_to_go[task->direction], &buss_lock);
+  } else if (current_tasks == 0) { // WAKE TASKS IN OTHER DIRECTION
+    cond_broadcast(&waiting_to_go[other_direction(task->direction)], &buss_lock);
+  }
+
+  lock_release(&buss_lock);
 }
